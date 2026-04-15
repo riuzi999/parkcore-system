@@ -1,0 +1,312 @@
+import sys
+from datetime import datetime
+from PyQt6.QtWidgets import (
+    QApplication, QMainWindow, QWidget, QVBoxLayout,
+    QLabel, QPushButton, QLineEdit, QComboBox,
+    QTableWidget, QTableWidgetItem, QTabWidget,
+    QMessageBox, QHeaderView
+)
+from PyQt6.QtGui import QIcon
+
+class Vehicle:
+    def __init__(self, plate, vtype, owner):
+        self.__plate = plate.strip().upper()
+        self.__type = vtype
+        self.__owner = owner.strip()
+        self.__entry_time = datetime.now()
+
+    def get_plate(self): return self.__plate
+    def get_type(self): return self.__type
+    def get_owner(self): return self.__owner
+    def get_entry_time(self): return self.__entry_time
+
+    def get_hours(self):
+        delta = datetime.now() - self.__entry_time
+        return max(1, int(delta.total_seconds() / 3600) + 1)
+
+class ParkingSlot:
+    def __init__(self, sid):
+        self.__id = sid
+        self.__vehicle = None
+
+    def get_id(self): return self.__id
+    def get_vehicle(self): return self.__vehicle
+
+    def is_free(self):
+        return self.__vehicle is None
+
+    def assign(self, vehicle):
+        if not self.is_free():
+            raise Exception("Slot not available")
+        self.__vehicle = vehicle
+
+    def release(self):
+        v = self.__vehicle
+        self.__vehicle = None
+        return v
+
+class FeeCalculator:
+    RATES = {"Car": 50, "Motorcycle": 30, "Truck": 80}
+
+    @staticmethod
+    def calculate(vehicle, hours):
+        rate = FeeCalculator.RATES.get(vehicle.get_type(), 50)
+        return rate * hours
+
+class Transaction:
+    def __init__(self, tx_id, vehicle, slot):
+        self.__id = tx_id
+        self.__vehicle = vehicle
+        self.__slot = slot
+        self.__entry = vehicle.get_entry_time()
+        self.__exit = None
+        self.__fee = None
+
+    def complete(self, fee):
+        self.__exit = datetime.now()
+        self.__fee = fee
+
+    def is_active(self):
+        return self.__exit is None
+
+    def get_vehicle(self):
+        return self.__vehicle
+
+    def get_data(self):
+        return [
+            self.__id,
+            self.__vehicle.get_plate(),
+            self.__vehicle.get_owner(),
+            self.__vehicle.get_type(),
+            self.__slot.get_id(),
+            self.__entry.strftime("%I:%M %p"),
+            self.__exit.strftime("%I:%M %p") if self.__exit else "-",
+            f"₱{self.__fee}" if self.__fee else "-"
+        ]
+
+
+class ParkingManager:
+    def __init__(self):
+        self.__slots = [ParkingSlot(str(i+1)) for i in range(10)]
+        self.__transactions = []
+        self.__counter = 1000
+
+    def get_slots(self): return self.__slots
+    def get_transactions(self): return self.__transactions
+
+    def find_vehicle(self, plate):
+        plate = plate.strip().upper()
+        for s in self.__slots:
+            v = s.get_vehicle()
+            if v and v.get_plate() == plate:
+                return s
+        return None
+
+    def check_in(self, plate, vtype, owner):
+        if not plate or not owner:
+            raise Exception("All fields are required")
+
+        if self.find_vehicle(plate):
+            raise Exception("Vehicle already parked")
+
+        for s in self.__slots:
+            if s.is_free():
+                v = Vehicle(plate, vtype, owner)
+                s.assign(v)
+
+                self.__counter += 1
+                tx = Transaction(f"TX-{self.__counter}", v, s)
+                self.__transactions.append(tx)
+
+                return v, s, tx
+
+        raise Exception("No slots available")
+
+    def check_out(self, plate):
+        slot = self.find_vehicle(plate)
+        if not slot:
+            raise Exception("Vehicle not found")
+
+        v = slot.get_vehicle()
+        hours = v.get_hours()
+        fee = FeeCalculator.calculate(v, hours)
+
+        for t in self.__transactions:
+            if t.get_vehicle() == v and t.is_active():
+                t.complete(fee)
+                break
+
+        slot.release()
+        return v, fee, hours
+
+class MainWindow(QMainWindow):
+    def __init__(self):
+        super().__init__()
+
+        self.setWindowTitle("ParkCore - Parking System (OOP)")
+        self.setWindowIcon(QIcon("car.ico")) 
+        self.setGeometry(200, 200, 800, 500)
+
+        self.manager = ParkingManager()
+
+        self.tabs = QTabWidget()
+        self.setCentralWidget(self.tabs)
+
+        self.init_dashboard()
+        self.init_entry()
+        self.init_exit()
+        self.init_logs()
+
+        self.refresh_all()
+
+    def init_dashboard(self):
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+
+        self.stats = QLabel()
+        layout.addWidget(self.stats)
+
+        self.table = QTableWidget(0, 4)
+        self.table.setHorizontalHeaderLabels(["Plate", "Type", "Owner", "Slot"])
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+
+        layout.addWidget(self.table)
+        self.tabs.addTab(tab, "Dashboard")
+
+    def refresh_dashboard(self):
+        self.table.setRowCount(0)
+
+        count = 0
+        revenue = 0
+
+        for s in self.manager.get_slots():
+            v = s.get_vehicle()
+            if v:
+                count += 1
+                row = self.table.rowCount()
+                self.table.insertRow(row)
+
+                self.table.setItem(row, 0, QTableWidgetItem(v.get_plate()))
+                self.table.setItem(row, 1, QTableWidgetItem(v.get_type()))
+                self.table.setItem(row, 2, QTableWidgetItem(v.get_owner()))
+                self.table.setItem(row, 3, QTableWidgetItem(s.get_id()))
+
+        for t in self.manager.get_transactions():
+            data = t.get_data()
+            if data[7] != "-":
+                revenue += int(data[7].replace("₱", ""))
+
+        self.stats.setText(f"Occupied: {count}/10 | Revenue: ₱{revenue}")
+
+    def init_entry(self):
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+
+        self.plate = QLineEdit()
+        self.plate.setPlaceholderText("Plate Number")
+
+        self.type = QComboBox()
+        self.type.addItems(["Car", "Motorcycle", "Truck"])
+
+        self.owner = QLineEdit()
+        self.owner.setPlaceholderText("Owner Name")
+
+        btn = QPushButton("Check In")
+        btn.clicked.connect(self.do_checkin)
+
+        layout.addWidget(self.plate)
+        layout.addWidget(self.type)
+        layout.addWidget(self.owner)
+        layout.addWidget(btn)
+
+        self.tabs.addTab(tab, "Entry")
+
+    def do_checkin(self):
+        try:
+            self.manager.check_in(
+                self.plate.text(),
+                self.type.currentText(),
+                self.owner.text()
+            )
+
+            QMessageBox.information(self, "Success", "Vehicle Checked In")
+
+            self.plate.clear()
+            self.owner.clear()
+
+            self.refresh_all()
+
+        except Exception as e:
+            QMessageBox.warning(self, "Error", str(e))
+
+    def init_exit(self):
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+
+        self.exit_plate = QLineEdit()
+        self.exit_plate.setPlaceholderText("Plate Number")
+
+        btn = QPushButton("Check Out")
+        btn.clicked.connect(self.do_checkout)
+
+        layout.addWidget(self.exit_plate)
+        layout.addWidget(btn)
+
+        self.tabs.addTab(tab, "Exit")
+
+    def do_checkout(self):
+        try:
+            v, fee, hours = self.manager.check_out(self.exit_plate.text())
+
+            QMessageBox.information(
+                self, "Receipt",
+                f"""CHECK OUT SUCCESS
+
+Plate: {v.get_plate()}
+Time In: {v.get_entry_time().strftime("%I:%M %p")}
+Time Out: {datetime.now().strftime("%I:%M %p")}
+
+Hours: {hours}
+Rate: ₱{FeeCalculator.RATES[v.get_type()]}/hr
+Total Fee: ₱{fee}
+"""
+            )
+
+            self.exit_plate.clear()
+            self.refresh_all()
+
+        except Exception as e:
+            QMessageBox.warning(self, "Error", str(e))
+
+    def init_logs(self):
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+
+        self.log_table = QTableWidget(0, 8)
+        self.log_table.setHorizontalHeaderLabels(
+            ["TX", "Plate", "Owner", "Type", "Slot", "Time In", "Time Out", "Fee"]
+        )
+        self.log_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+
+        layout.addWidget(self.log_table)
+        self.tabs.addTab(tab, "Logs")
+
+    def refresh_logs(self):
+        self.log_table.setRowCount(0)
+
+        for t in self.manager.get_transactions():
+            row = self.log_table.rowCount()
+            self.log_table.insertRow(row)
+
+            for col, val in enumerate(t.get_data()):
+                self.log_table.setItem(row, col, QTableWidgetItem(val))
+
+    def refresh_all(self):
+        self.refresh_dashboard()
+        self.refresh_logs()
+
+if __name__ == "__main__":
+    app = QApplication(sys.argv)
+    window = MainWindow()
+    window.show()
+    sys.exit(app.exec())
